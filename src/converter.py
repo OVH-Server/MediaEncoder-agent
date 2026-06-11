@@ -25,7 +25,7 @@ _cancel = threading.Event()
 _proc = None
 _state = {'job_id': None, 'state': 'idle', 'progress': 0.0, 'fps': 0.0,
           'eta': None, 'message': '', 'out_size': 0,
-          'frame': 0, 'total_frames': 0}
+          'frame': 0, 'total_frames': 0, 'streams': []}
 
 
 class _Canceled(Exception):
@@ -87,7 +87,7 @@ def start_job(payload, api_key):
         _cancel.clear()
         _state.update(job_id=payload['job_id'], state='starting', progress=0.0,
                       fps=0.0, eta=None, message='', out_size=0,
-                      frame=0, total_frames=0)
+                      frame=0, total_frames=0, streams=[])
     threading.Thread(target=_run, args=(payload, api_key), daemon=True).start()
     return True
 
@@ -119,8 +119,8 @@ def _run(payload, api_key):
                   payload.get('size') or 0)
         _check_cancel()
         _set(state='probing', progress=0.0)
-        duration, total_frames = _probe_video(inp)
-        _set(state='converting', progress=0.0, total_frames=total_frames)
+        duration, total_frames, streams = _probe_streams(inp)
+        _set(state='converting', progress=0.0, total_frames=total_frames, streams=streams)
         _convert(payload['options'], inp, out, out_ext, duration)
         _check_cancel()
         _set(state='uploading', progress=0.0, out_size=os.path.getsize(out))
@@ -158,8 +158,8 @@ def _download(url, dest, headers, expected_size):
     _set(progress=100.0)
 
 
-def _probe_video(path):
-    """Retourne (durée en s, nombre total d'images estimé du flux vidéo)."""
+def _probe_streams(path):
+    """Retourne (durée en s, total_frames vidéo, liste de flux détaillés)."""
     out = subprocess.run(
         [FFPROBE, '-v', 'error', '-print_format', 'json',
          '-show_format', '-show_streams', path],
@@ -171,24 +171,46 @@ def _probe_video(path):
         duration = float(data['format'].get('duration') or 0)
     except (KeyError, TypeError, ValueError):
         duration = 0.0
+
+    IMAGE_CODECS = {'mjpeg', 'png', 'bmp', 'gif'}
     total_frames = 0
+    streams = []
     for s in data.get('streams', []):
-        if s.get('codec_type') != 'video' or s.get('disposition', {}).get('attached_pic'):
-            continue
-        try:
-            total_frames = int(s.get('nb_frames') or 0)
-        except (TypeError, ValueError):
-            total_frames = 0
-        if not total_frames and duration > 0:
-            # mkv n'a généralement pas nb_frames : estimation durée × cadence
-            num, _, den = (s.get('avg_frame_rate') or '0/1').partition('/')
+        ctype = s.get('codec_type')
+        codec = s.get('codec_name', '?')
+        lang = (s.get('tags') or {}).get('language', '')
+        title = (s.get('tags') or {}).get('title', '')
+        if ctype == 'video':
+            if codec in IMAGE_CODECS or s.get('disposition', {}).get('attached_pic'):
+                continue
             try:
-                fps = float(num) / float(den or 1)
-            except (ValueError, ZeroDivisionError):
-                fps = 0.0
-            total_frames = int(duration * fps)
-        break
-    return duration, total_frames
+                total_frames = int(s.get('nb_frames') or 0)
+            except (TypeError, ValueError):
+                total_frames = 0
+            if not total_frames and duration > 0:
+                num, _, den = (s.get('avg_frame_rate') or '0/1').partition('/')
+                try:
+                    total_frames = int(duration * float(num) / float(den or 1))
+                except (ValueError, ZeroDivisionError):
+                    pass
+            streams.append({
+                'type': 'video', 'codec': codec,
+                'width': int(s.get('width') or 0),
+                'height': int(s.get('height') or 0),
+                'total_frames': total_frames,
+            })
+        elif ctype == 'audio':
+            streams.append({
+                'type': 'audio', 'codec': codec,
+                'lang': lang, 'title': title,
+                'channels': int(s.get('channels') or 0),
+            })
+        elif ctype == 'subtitle':
+            streams.append({
+                'type': 'subtitle', 'codec': codec,
+                'lang': lang, 'title': title,
+            })
+    return duration, total_frames, streams
 
 
 def _build_cmd(opts, inp, out, out_ext):
@@ -229,34 +251,28 @@ def _convert(opts, inp, out, out_ext, duration):
     log.info('ffmpeg : %s', ' '.join(cmd))
     _proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              text=True)
-    speed = 0.0
     for line in _proc.stdout:
         if _cancel.is_set():
             _proc.terminate()
             break
         key, _, val = line.strip().partition('=')
-        if key in ('out_time_us', 'out_time_ms'):  # les deux sont en microsecondes
+        if key == 'frame':
             try:
-                t = int(val) / 1_000_000
-            except ValueError:
-                continue
-            if duration > 0:
-                _set(progress=min(99.9, t * 100.0 / duration))
-                if speed > 0:
-                    _set(eta=int(max(0, duration - t) / speed))
-        elif key == 'frame':
-            try:
-                _set(frame=int(val))
+                frame = int(val)
+                with _lock:
+                    tf = _state['total_frames']
+                    fps = _state['fps']
+                updates = {'frame': frame}
+                if tf > 0:
+                    updates['progress'] = min(99.9, frame * 100.0 / tf)
+                    if fps > 0:
+                        updates['eta'] = int(max(0, tf - frame) / fps)
+                _set(**updates)
             except ValueError:
                 pass
         elif key == 'fps':
             try:
                 _set(fps=float(val))
-            except ValueError:
-                pass
-        elif key == 'speed':
-            try:
-                speed = float(val.rstrip('x'))
             except ValueError:
                 pass
     _proc.wait()
