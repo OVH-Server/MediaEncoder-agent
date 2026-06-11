@@ -5,9 +5,9 @@ FROM python:3.12-slim
 # par le nvidia-container-toolkit (NVIDIA_DRIVER_CAPABILITIES=video).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl xz-utils ca-certificates && \
-    curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz -o /tmp/ffmpeg.tar.xz && \
+    curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz -o /tmp/ffmpeg.tar.xz && \
     tar -xf /tmp/ffmpeg.tar.xz -C /tmp && \
-    mv /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ && \
+    mv /tmp/ffmpeg-n7.1-latest-linux64-gpl-7.1/bin/ffmpeg /tmp/ffmpeg-n7.1-latest-linux64-gpl-7.1/bin/ffprobe /usr/local/bin/ && \
     rm -rf /tmp/ffmpeg* && \
     apt-get purge -y curl xz-utils && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*

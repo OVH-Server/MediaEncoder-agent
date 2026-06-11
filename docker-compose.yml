@@ -12,10 +12,11 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
     volumes:
       - ${WORK_PATH:-./work}:/work
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu, video]
+              capabilities: [gpu, video, utility]
