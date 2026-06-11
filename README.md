@@ -22,6 +22,12 @@ cp .env.example .env   # même API_KEY que le serveur
 docker compose up -d --build
 ```
 
+| Variable | Rôle |
+|---|---|
+| `API_KEY` | Clé partagée serveur ↔ agent |
+| `FLASK_PORT` | Port publié sur l'hôte |
+| `WORK_PATH` | Chemin hôte de stockage des fichiers à compresser / compressés (ex. `/data/hdd_1To/media-encoder`) |
+
 Vérifier que NVENC est détecté :
 
 ```sh

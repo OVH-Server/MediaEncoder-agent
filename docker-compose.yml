@@ -12,7 +12,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
     volumes:
-      - ./work:/work
+      - ${WORK_PATH:-./work}:/work
     ports:
       - "${FLASK_PORT:-5401}:5401"
     deploy:
