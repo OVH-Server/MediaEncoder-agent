@@ -27,13 +27,13 @@ _cancel = threading.Event()
 _proc = None
 _state = {'job_id': None, 'state': 'idle', 'progress': 0.0, 'fps': 0.0,
           'eta': None, 'message': '', 'out_size': 0,
-          'frame': 0, 'total_frames': 0, 'streams': []}
+          'frame': 0, 'total_frames': 0, 'streams': [], 'speed': 0.0}
 
 # État du préchargement pipeline (téléchargement du job N+1 pendant l'encodage du job N)
 _prefetch_lock = threading.Lock()
 _prefetch_cancel = threading.Event()
 _prefetch = {'job_id': None, 'path': None, 'done': False, 'error': None,
-             'thread': None, 'progress': 0.0}
+             'thread': None, 'progress': 0.0, 'speed': 0.0}
 
 
 class _Canceled(Exception):
@@ -116,7 +116,7 @@ def start_job(payload, headers):
         _cancel.clear()
         _state.update(job_id=payload['job_id'], state='starting', progress=0.0,
                       fps=0.0, eta=None, message='', out_size=0,
-                      frame=0, total_frames=0, streams=[])
+                      frame=0, total_frames=0, streams=[], speed=0.0)
     # Préserve le préchargement si c'est bien ce job, sinon réinitialise
     with _prefetch_lock:
         if _prefetch['job_id'] != payload['job_id']:
@@ -135,7 +135,7 @@ def start_prefetch(payload, headers):
             return  # Déjà en cours pour ce job
         _prefetch_cancel.clear()
         _prefetch.update(job_id=jid, path=None, done=False, error=None,
-                         thread=None, progress=0.0, error_reported=False)
+                         thread=None, progress=0.0, speed=0.0, error_reported=False)
     t = threading.Thread(target=_prefetch_run, args=(payload, headers), daemon=True)
     with _prefetch_lock:
         _prefetch['thread'] = t
@@ -156,6 +156,8 @@ def _prefetch_run(payload, headers):
                 raise RuntimeError(f'Préchargement refusé : HTTP {r.status_code}')
             total = int(r.headers.get('Content-Length') or payload.get('size') or 0)
             done_bytes = 0
+            last_t = time.time()
+            last_done = 0
             with open(path, 'wb') as fh:
                 for chunk in r.iter_content(1024 * 1024):
                     if _prefetch_cancel.is_set():
@@ -163,10 +165,15 @@ def _prefetch_run(payload, headers):
                     h.update(chunk)
                     fh.write(chunk)
                     done_bytes += len(chunk)
-                    if total:
+                    now = time.time()
+                    if now - last_t >= 1.0:
+                        speed = (done_bytes - last_done) / (now - last_t)
+                        last_t, last_done = now, done_bytes
                         with _prefetch_lock:
                             if _prefetch['job_id'] == jid:
-                                _prefetch['progress'] = min(99.9, done_bytes * 100.0 / total)
+                                _prefetch['speed'] = speed
+                                if total:
+                                    _prefetch['progress'] = min(99.9, done_bytes * 100.0 / total)
         # Fichier complètement écrit : vérifie l'intégrité avant de le marquer prêt.
         # En cas de mismatch → error → _wait_for_prefetch retournera None et le
         # job retombera sur un _download normal (re-téléchargement).
@@ -195,13 +202,14 @@ def has_prefetch(job_id):
 
 
 def get_prefetch_progress():
-    """Retourne (job_id, progress%) si un préchargement est actif, sinon None."""
+    """Retourne (job_id, progress%, speed) si un préchargement est actif, sinon None."""
     with _prefetch_lock:
-        jid  = _prefetch['job_id']
-        prog = _prefetch['progress']
-        done = _prefetch['done']
+        jid   = _prefetch['job_id']
+        prog  = _prefetch['progress']
+        speed = _prefetch['speed']
+        done  = _prefetch['done']
     if jid is not None and not done:
-        return jid, prog
+        return jid, prog, speed
     return None
 
 
@@ -295,12 +303,12 @@ def _run(payload, headers):
             _verify_source_checksum(payload, digest, headers)
             _set(state='probing', progress=0.0)
         duration, total_frames, streams = _probe_streams(inp)
-        _set(state='converting', progress=0.0, total_frames=total_frames, streams=streams)
+        _set(state='converting', progress=0.0, total_frames=total_frames, streams=streams, speed=0.0)
         _convert(payload['options'], inp, out, out_ext, duration)
         _check_cancel()
-        _set(state='uploading', progress=0.0, out_size=os.path.getsize(out))
+        _set(state='uploading', progress=0.0, out_size=os.path.getsize(out), speed=0.0)
         _upload(payload['upload_url'], out, out_ext, headers)
-        _set(state='done', progress=100.0, eta=None)
+        _set(state='done', progress=100.0, eta=None, speed=0.0)
         log.info('Job %s terminé', jid)
     except _Canceled:
         _set(state='canceled', message='Annulé par le serveur')
@@ -318,22 +326,30 @@ def _run(payload, headers):
 
 def _download(url, dest, headers, expected_size):
     """Télécharge la source en hashant les octets écrits. Retourne le sha256 hex."""
-    _set(state='downloading', progress=0.0)
+    _set(state='downloading', progress=0.0, speed=0.0)
     h = hashlib.sha256()
     with requests.get(url, headers=headers, stream=True, timeout=(10, 120)) as r:
         if not r.ok:
             raise RuntimeError(f'Téléchargement refusé : HTTP {r.status_code}')
         total = int(r.headers.get('Content-Length') or expected_size or 0)
         done = 0
+        t0 = last_t = time.time()
+        last_done = 0
         with open(dest, 'wb') as fh:
             for chunk in r.iter_content(1024 * 1024):
                 _check_cancel()
                 h.update(chunk)
                 fh.write(chunk)
                 done += len(chunk)
-                if total:
-                    _set(progress=min(99.9, done * 100.0 / total))
-    _set(progress=100.0)
+                now = time.time()
+                if now - last_t >= 1.0:
+                    speed = (done - last_done) / (now - last_t)
+                    last_t, last_done = now, done
+                    upd = {'speed': speed}
+                    if total:
+                        upd['progress'] = min(99.9, done * 100.0 / total)
+                    _set(**upd)
+    _set(progress=100.0, speed=0.0)
     return h.hexdigest()
 
 
@@ -491,6 +507,8 @@ class _ProgressFile:
         self._fh = open(path, 'rb')
         self._size = os.path.getsize(path)
         self._sent = 0
+        self._t0 = self._last_t = time.time()
+        self._last_sent = 0
 
     def __len__(self):
         return self._size
@@ -499,8 +517,14 @@ class _ProgressFile:
         _check_cancel()
         chunk = self._fh.read(n)
         self._sent += len(chunk)
-        if self._size:
-            _set(progress=min(99.9, self._sent * 100.0 / self._size))
+        now = time.time()
+        if now - self._last_t >= 1.0:
+            speed = (self._sent - self._last_sent) / (now - self._last_t)
+            self._last_t, self._last_sent = now, self._sent
+            upd = {'speed': speed}
+            if self._size:
+                upd['progress'] = min(99.9, self._sent * 100.0 / self._size)
+            _set(**upd)
         return chunk
 
     def close(self):
