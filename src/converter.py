@@ -135,7 +135,7 @@ def start_prefetch(payload, headers):
             return  # Déjà en cours pour ce job
         _prefetch_cancel.clear()
         _prefetch.update(job_id=jid, path=None, done=False, error=None,
-                         thread=None, progress=0.0)
+                         thread=None, progress=0.0, error_reported=False)
     t = threading.Thread(target=_prefetch_run, args=(payload, headers), daemon=True)
     with _prefetch_lock:
         _prefetch['thread'] = t
@@ -202,6 +202,18 @@ def get_prefetch_progress():
         done = _prefetch['done']
     if jid is not None and not done:
         return jid, prog
+    return None
+
+
+def get_prefetch_error():
+    """Retourne (job_id, message) si le dernier préchargement a échoué (une fois),
+    puis efface l'erreur pour ne pas la re-signaler. Sinon None."""
+    with _prefetch_lock:
+        jid = _prefetch['job_id']
+        err = _prefetch['error']
+        if jid is not None and err and not _prefetch.get('error_reported'):
+            _prefetch['error_reported'] = True
+            return jid, err
     return None
 
 

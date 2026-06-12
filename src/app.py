@@ -70,6 +70,9 @@ def _report_loop(job_id):
             pf = converter.get_prefetch_progress()
             if pf:
                 body['prefetch_progress'] = {'job_id': pf[0], 'progress': pf[1]}
+            pfe = converter.get_prefetch_error()
+            if pfe:
+                body['prefetch_error'] = {'job_id': pfe[0], 'message': pfe[1]}
             r = requests.post(
                 f'{SERVER_URL}/api/agent/jobs/{job_id}/progress',
                 headers=HEADERS,
