@@ -69,10 +69,16 @@ def _report_loop(job_id):
                 json={**st, 'agent_id': AGENT_ID},
                 timeout=8,
             )
-            if r.ok and r.json().get('cancel'):
-                log.info('Annulation reçue pour job %s', job_id)
-                converter.cancel(job_id)
-                break
+            if r.ok:
+                resp = r.json()
+                if resp.get('cancel'):
+                    log.info('Annulation reçue pour job %s', job_id)
+                    converter.cancel(job_id)
+                    break
+                prefetch = resp.get('prefetch')
+                if prefetch and not converter.has_prefetch(prefetch.get('job_id')):
+                    log.info('Préchargement job %s en arrière-plan', prefetch.get('job_id'))
+                    converter.start_prefetch(prefetch, HEADERS)
         except Exception as e:
             log.warning('Rapport progression job %s : %s', job_id, e)
         time.sleep(3)

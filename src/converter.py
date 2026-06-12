@@ -27,6 +27,10 @@ _state = {'job_id': None, 'state': 'idle', 'progress': 0.0, 'fps': 0.0,
           'eta': None, 'message': '', 'out_size': 0,
           'frame': 0, 'total_frames': 0, 'streams': []}
 
+# État du préchargement pipeline (téléchargement du job N+1 pendant l'encodage du job N)
+_prefetch_lock = threading.Lock()
+_prefetch = {'job_id': None, 'path': None, 'done': False, 'error': None}
+
 
 class _Canceled(Exception):
     pass
@@ -88,8 +92,80 @@ def start_job(payload, headers):
         _state.update(job_id=payload['job_id'], state='starting', progress=0.0,
                       fps=0.0, eta=None, message='', out_size=0,
                       frame=0, total_frames=0, streams=[])
+    # Préserve le préchargement si c'est bien ce job, sinon réinitialise
+    with _prefetch_lock:
+        if _prefetch['job_id'] != payload['job_id']:
+            _prefetch.update(job_id=None, path=None, done=False, error=None)
     threading.Thread(target=_run, args=(payload, headers), daemon=True).start()
     return True
+
+
+def start_prefetch(payload, headers):
+    """Lance le téléchargement du prochain job en arrière-plan."""
+    jid = payload['job_id']
+    with _prefetch_lock:
+        if _prefetch['job_id'] == jid:
+            return  # Déjà en cours pour ce job
+        _prefetch.update(job_id=jid, path=None, done=False, error=None)
+    threading.Thread(target=_prefetch_run, args=(payload, headers), daemon=True).start()
+
+
+def _prefetch_run(payload, headers):
+    jid = payload['job_id']
+    ext = (payload.get('ext') or '.mkv').lower()
+    path = os.path.join(WORK_DIR, f'in_{jid}{ext}')
+    with _prefetch_lock:
+        _prefetch['path'] = path
+    try:
+        _download_silent(payload['download_url'], path, headers, payload.get('size') or 0)
+        with _prefetch_lock:
+            if _prefetch['job_id'] == jid:
+                _prefetch['done'] = True
+        log.info('Préchargement job %s terminé', jid)
+    except Exception as e:
+        with _prefetch_lock:
+            if _prefetch['job_id'] == jid:
+                _prefetch['error'] = str(e)
+                _prefetch['done'] = True
+        log.warning('Préchargement job %s échoué : %s', jid, e)
+
+
+def _download_silent(url, dest, headers, expected_size):
+    """Télécharge sans modifier _state (pour le préchargement en arrière-plan)."""
+    with requests.get(url, headers=headers, stream=True, timeout=(10, 120)) as r:
+        if not r.ok:
+            raise RuntimeError(f'Préchargement refusé : HTTP {r.status_code}')
+        with open(dest, 'wb') as fh:
+            for chunk in r.iter_content(1024 * 1024):
+                if _cancel.is_set():
+                    return
+                fh.write(chunk)
+
+
+def has_prefetch(job_id):
+    """Retourne True si un préchargement est en cours ou terminé pour ce job."""
+    with _prefetch_lock:
+        return _prefetch['job_id'] == job_id
+
+
+def _wait_for_prefetch(job_id, timeout=300):
+    """Attend que le préchargement du job_id soit terminé. Retourne le chemin ou None."""
+    import time as _time
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        with _prefetch_lock:
+            if _prefetch['job_id'] != job_id:
+                return None  # Annulé ou remplacé
+            if _prefetch['done']:
+                if _prefetch['error'] or not _prefetch['path']:
+                    return None
+                if os.path.exists(_prefetch['path']):
+                    return _prefetch['path']
+                return None
+        if _cancel.is_set():
+            return None
+        _time.sleep(0.5)
+    return None
 
 
 def cancel(job_id):
@@ -114,10 +190,15 @@ def _run(payload, headers):
     inp = os.path.join(WORK_DIR, f'in_{jid}{ext}')
     out = os.path.join(WORK_DIR, f'out_{jid}{out_ext}')
     try:
-        _download(payload['download_url'], inp, headers,
-                  payload.get('size') or 0)
-        _check_cancel()
-        _set(state='probing', progress=0.0)
+        # Utilise le fichier préchargé si disponible, sinon télécharge normalement
+        prefetched = _wait_for_prefetch(jid) if has_prefetch(jid) else None
+        if prefetched:
+            log.info('Job %s : fichier préchargé utilisé (%s)', jid, prefetched)
+            _set(state='probing', progress=0.0)
+        else:
+            _download(payload['download_url'], inp, headers, payload.get('size') or 0)
+            _check_cancel()
+            _set(state='probing', progress=0.0)
         duration, total_frames, streams = _probe_streams(inp)
         _set(state='converting', progress=0.0, total_frames=total_frames, streams=streams)
         _convert(payload['options'], inp, out, out_ext, duration)
