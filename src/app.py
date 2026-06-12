@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import threading
+from base64 import b64encode
 
 import requests
 
@@ -14,7 +15,11 @@ import converter
 SERVER_URL    = os.getenv('SERVER_URL', '').rstrip('/')
 API_KEY       = os.getenv('API_KEY', '')
 POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '5'))
-HEADERS       = {'Authorization': f'Bearer {API_KEY}'}
+
+HEADERS = {'X-Agent-Key': API_KEY}
+_basic = os.getenv('BASIC_AUTH', '')  # format user:pass
+if _basic:
+    HEADERS['Authorization'] = 'Basic ' + b64encode(_basic.encode()).decode()
 
 
 def _heartbeat_loop():
