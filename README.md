@@ -37,3 +37,31 @@ docker compose logs mediaencoder-agent
 
 Notes GTX 1060 : encodeur Pascal — pas d'AV1, pas de B-frames en HEVC ;
 `hevc_nvenc` CQ 24 donne typiquement −40 à −60 % sur des sources H.264.
+
+## Développement
+
+Ce dépôt est un fork de
+[RollinLondon/MediaEncoder-agent](https://github.com/RollinLondon/MediaEncoder-agent).
+
+### Branches
+
+| Branche | Rôle |
+|---------|------|
+| `main`  | Miroir exact de `upstream/main` — ne jamais committer directement dessus |
+| `nfour` | Branche custom (fix GTX 1060, config OVH) — c'est ici que l'on travaille |
+
+### Setup après un clone
+
+```sh
+git remote add upstream git@github.com:RollinLondon/MediaEncoder-agent
+git fetch upstream
+git checkout nfour
+```
+
+### Récupérer les nouveaux changements depuis l'upstream
+
+```sh
+git fetch upstream
+git checkout main && git merge --ff-only upstream/main
+git checkout nfour && git rebase main
+```
