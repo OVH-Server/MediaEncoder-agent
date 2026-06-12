@@ -1,3 +1,4 @@
+import hashlib
 import os
 import json
 import logging
@@ -127,6 +128,7 @@ def _prefetch_run(payload, headers):
     with _prefetch_lock:
         _prefetch['path'] = path
     try:
+        h = hashlib.sha256()
         with requests.get(payload['download_url'], headers=headers,
                           stream=True, timeout=(10, 120)) as r:
             if not r.ok:
@@ -137,12 +139,17 @@ def _prefetch_run(payload, headers):
                 for chunk in r.iter_content(1024 * 1024):
                     if _prefetch_cancel.is_set():
                         return
+                    h.update(chunk)
                     fh.write(chunk)
                     done_bytes += len(chunk)
                     if total:
                         with _prefetch_lock:
                             if _prefetch['job_id'] == jid:
                                 _prefetch['progress'] = min(99.9, done_bytes * 100.0 / total)
+        # Fichier complètement écrit : vérifie l'intégrité avant de le marquer prêt.
+        # En cas de mismatch → error → _wait_for_prefetch retournera None et le
+        # job retombera sur un _download normal (re-téléchargement).
+        _verify_source_checksum(payload, h.hexdigest(), headers)
         with _prefetch_lock:
             if _prefetch['job_id'] == jid:
                 _prefetch['done'] = True
@@ -243,13 +250,16 @@ def _run(payload, headers):
     out = os.path.join(WORK_DIR, f'out_{jid}{out_ext}')
     try:
         # Utilise le fichier préchargé si disponible, sinon télécharge normalement
+        # (le préchargement a déjà vérifié son checksum dans _prefetch_run)
         prefetched = _wait_for_prefetch(jid) if has_prefetch(jid) else None
         if prefetched:
             log.info('Job %s : fichier préchargé utilisé (%s)', jid, prefetched)
             _set(state='probing', progress=0.0)
         else:
-            _download(payload['download_url'], inp, headers, payload.get('size') or 0)
+            digest = _download(payload['download_url'], inp, headers,
+                               payload.get('size') or 0)
             _check_cancel()
+            _verify_source_checksum(payload, digest, headers)
             _set(state='probing', progress=0.0)
         duration, total_frames, streams = _probe_streams(inp)
         _set(state='converting', progress=0.0, total_frames=total_frames, streams=streams)
@@ -274,7 +284,9 @@ def _run(payload, headers):
 
 
 def _download(url, dest, headers, expected_size):
+    """Télécharge la source en hashant les octets écrits. Retourne le sha256 hex."""
     _set(state='downloading', progress=0.0)
+    h = hashlib.sha256()
     with requests.get(url, headers=headers, stream=True, timeout=(10, 120)) as r:
         if not r.ok:
             raise RuntimeError(f'Téléchargement refusé : HTTP {r.status_code}')
@@ -283,11 +295,32 @@ def _download(url, dest, headers, expected_size):
         with open(dest, 'wb') as fh:
             for chunk in r.iter_content(1024 * 1024):
                 _check_cancel()
+                h.update(chunk)
                 fh.write(chunk)
                 done += len(chunk)
                 if total:
                     _set(progress=min(99.9, done * 100.0 / total))
     _set(progress=100.0)
+    return h.hexdigest()
+
+
+def _verify_source_checksum(payload, digest, headers):
+    """Compare le hash local (calculé sur le fichier complètement reçu) au
+    sha256 de la source retourné par le serveur. Serveur ancien : skip."""
+    url = payload.get('checksum_url')
+    if not url or not digest:
+        return
+    r = requests.get(url, headers=headers, timeout=(10, 600))
+    if not r.ok:
+        log.warning('Checksum source indisponible (HTTP %s) — vérification sautée',
+                    r.status_code)
+        return
+    expected = (r.json().get('sha256') or '').lower()
+    if expected and expected != digest:
+        raise RuntimeError(
+            f'Checksum source invalide après téléchargement '
+            f'({digest[:12]}… ≠ {expected[:12]}…)')
+    log.info('Checksum source vérifié (%s…)', digest[:12])
 
 
 def _probe_streams(path):
@@ -442,11 +475,20 @@ class _ProgressFile:
 
 
 def _upload(url, path, out_ext, headers):
+    # Hash du fichier encodé (complet sur disque local, ffmpeg terminé) envoyé
+    # en header : le serveur compare au hash des octets reçus une fois le flux
+    # terminé pour valider l'intégrité du transfert retour.
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            _check_cancel()
+            h.update(chunk)
     pf = _ProgressFile(path)
     try:
         r = requests.post(f'{url}?ext={out_ext}', data=pf,
                           headers={**headers,
-                                   'Content-Type': 'application/octet-stream'},
+                                   'Content-Type': 'application/octet-stream',
+                                   'X-Content-Sha256': h.hexdigest()},
                           timeout=(10, 600))
     finally:
         pf.close()

@@ -17,6 +17,12 @@ le fichier, le convertit (hevc_nvenc / h264_nvenc) et le renvoie.
   les boucles via un `threading.Event` puis POST `/api/agent/disconnect` —
   le serveur marque l'agent hors-ligne immédiatement (sans attendre les 90s
   d'expiration du heartbeat) et libère ses jobs.
+- **Intégrité des transferts (SHA-256)** : après téléchargement complet d'une
+  source, l'agent compare son hash local (calculé au fil de l'écriture) au
+  checksum retourné par `GET /transfer/<id>/checksum`. À l'upload, le hash du
+  fichier encodé part dans le header `X-Content-Sha256` et le serveur vérifie
+  côté réception. Mismatch → job en erreur (source) / 422 (upload), l'original
+  n'est jamais remplacé par un fichier corrompu.
 - Pistes audio, sous-titres, chapitres et pièces jointes copiés sans ré-encodage.
 - Les conteneurs exotiques (avi, ts, wmv…) sont remuxés en `.mkv`.
 - Vérifie au démarrage que NVENC s'initialise vraiment (GPU visible) ; repli
