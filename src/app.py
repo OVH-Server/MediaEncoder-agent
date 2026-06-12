@@ -63,10 +63,14 @@ def _report_loop(job_id):
                 log.warning('Rapport erreur job %s : %s', job_id, e)
             break
         try:
+            body = {**st, 'agent_id': AGENT_ID}
+            pf = converter.get_prefetch_progress()
+            if pf:
+                body['prefetch_progress'] = {'job_id': pf[0], 'progress': pf[1]}
             r = requests.post(
                 f'{SERVER_URL}/api/agent/jobs/{job_id}/progress',
                 headers=HEADERS,
-                json={**st, 'agent_id': AGENT_ID},
+                json=body,
                 timeout=8,
             )
             if r.ok:

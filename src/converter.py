@@ -29,7 +29,9 @@ _state = {'job_id': None, 'state': 'idle', 'progress': 0.0, 'fps': 0.0,
 
 # État du préchargement pipeline (téléchargement du job N+1 pendant l'encodage du job N)
 _prefetch_lock = threading.Lock()
-_prefetch = {'job_id': None, 'path': None, 'done': False, 'error': None}
+_prefetch_cancel = threading.Event()
+_prefetch = {'job_id': None, 'path': None, 'done': False, 'error': None,
+             'thread': None, 'progress': 0.0}
 
 
 class _Canceled(Exception):
@@ -95,7 +97,9 @@ def start_job(payload, headers):
     # Préserve le préchargement si c'est bien ce job, sinon réinitialise
     with _prefetch_lock:
         if _prefetch['job_id'] != payload['job_id']:
-            _prefetch.update(job_id=None, path=None, done=False, error=None)
+            _prefetch_cancel.set()
+            _prefetch.update(job_id=None, path=None, done=False, error=None,
+                             thread=None, progress=0.0)
     threading.Thread(target=_run, args=(payload, headers), daemon=True).start()
     return True
 
@@ -106,8 +110,13 @@ def start_prefetch(payload, headers):
     with _prefetch_lock:
         if _prefetch['job_id'] == jid:
             return  # Déjà en cours pour ce job
-        _prefetch.update(job_id=jid, path=None, done=False, error=None)
-    threading.Thread(target=_prefetch_run, args=(payload, headers), daemon=True).start()
+        _prefetch_cancel.clear()
+        _prefetch.update(job_id=jid, path=None, done=False, error=None,
+                         thread=None, progress=0.0)
+    t = threading.Thread(target=_prefetch_run, args=(payload, headers), daemon=True)
+    with _prefetch_lock:
+        _prefetch['thread'] = t
+    t.start()
 
 
 def _prefetch_run(payload, headers):
@@ -117,10 +126,26 @@ def _prefetch_run(payload, headers):
     with _prefetch_lock:
         _prefetch['path'] = path
     try:
-        _download_silent(payload['download_url'], path, headers, payload.get('size') or 0)
+        with requests.get(payload['download_url'], headers=headers,
+                          stream=True, timeout=(10, 120)) as r:
+            if not r.ok:
+                raise RuntimeError(f'Préchargement refusé : HTTP {r.status_code}')
+            total = int(r.headers.get('Content-Length') or payload.get('size') or 0)
+            done_bytes = 0
+            with open(path, 'wb') as fh:
+                for chunk in r.iter_content(1024 * 1024):
+                    if _prefetch_cancel.is_set():
+                        return
+                    fh.write(chunk)
+                    done_bytes += len(chunk)
+                    if total:
+                        with _prefetch_lock:
+                            if _prefetch['job_id'] == jid:
+                                _prefetch['progress'] = min(99.9, done_bytes * 100.0 / total)
         with _prefetch_lock:
             if _prefetch['job_id'] == jid:
                 _prefetch['done'] = True
+                _prefetch['progress'] = 100.0
         log.info('Préchargement job %s terminé', jid)
     except Exception as e:
         with _prefetch_lock:
@@ -128,18 +153,10 @@ def _prefetch_run(payload, headers):
                 _prefetch['error'] = str(e)
                 _prefetch['done'] = True
         log.warning('Préchargement job %s échoué : %s', jid, e)
-
-
-def _download_silent(url, dest, headers, expected_size):
-    """Télécharge sans modifier _state (pour le préchargement en arrière-plan)."""
-    with requests.get(url, headers=headers, stream=True, timeout=(10, 120)) as r:
-        if not r.ok:
-            raise RuntimeError(f'Préchargement refusé : HTTP {r.status_code}')
-        with open(dest, 'wb') as fh:
-            for chunk in r.iter_content(1024 * 1024):
-                if _cancel.is_set():
-                    return
-                fh.write(chunk)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def has_prefetch(job_id):
@@ -148,24 +165,50 @@ def has_prefetch(job_id):
         return _prefetch['job_id'] == job_id
 
 
-def _wait_for_prefetch(job_id, timeout=300):
-    """Attend que le préchargement du job_id soit terminé. Retourne le chemin ou None."""
-    import time as _time
-    deadline = _time.time() + timeout
-    while _time.time() < deadline:
-        with _prefetch_lock:
-            if _prefetch['job_id'] != job_id:
-                return None  # Annulé ou remplacé
-            if _prefetch['done']:
-                if _prefetch['error'] or not _prefetch['path']:
-                    return None
-                if os.path.exists(_prefetch['path']):
-                    return _prefetch['path']
-                return None
-        if _cancel.is_set():
-            return None
-        _time.sleep(0.5)
+def get_prefetch_progress():
+    """Retourne (job_id, progress%) si un préchargement est actif, sinon None."""
+    with _prefetch_lock:
+        jid  = _prefetch['job_id']
+        prog = _prefetch['progress']
+        done = _prefetch['done']
+    if jid is not None and not done:
+        return jid, prog
     return None
+
+
+def _wait_for_prefetch(job_id):
+    """Joint le thread de préchargement et retourne le chemin si succès, sinon None."""
+    with _prefetch_lock:
+        if _prefetch['job_id'] != job_id:
+            return None
+        t    = _prefetch['thread']
+        path = _prefetch['path']
+
+    if t and t.is_alive():
+        log.info('Job %s : attente fin préchargement…', job_id)
+        t.join(timeout=600)
+        if t.is_alive():
+            log.warning('Job %s : préchargement trop long, abandon', job_id)
+            _prefetch_cancel.set()
+            t.join(timeout=30)
+            # Nettoie le fichier partiel avant que _download ne reprenne
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            return None
+
+    with _prefetch_lock:
+        if _prefetch['job_id'] != job_id:
+            return None
+        done  = _prefetch['done']
+        error = _prefetch['error']
+        path  = _prefetch['path']
+
+    if not done or error or not path or not os.path.exists(path):
+        return None
+    return path
 
 
 def cancel(job_id):
