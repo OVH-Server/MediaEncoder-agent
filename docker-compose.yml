@@ -8,13 +8,10 @@ services:
     env_file: .env
     environment:
       - WORK_DIR=/work
-      - FLASK_PORT=5401  # port interne fixe ; FLASK_PORT du .env ne pilote que le port hôte
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
     volumes:
       - ${WORK_PATH:-./work}:/work
-    ports:
-      - "${FLASK_PORT:-5401}:5401"
     deploy:
       resources:
         reservations:

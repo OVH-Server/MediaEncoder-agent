@@ -1,7 +1,9 @@
 import os
+import time
 import logging
+import threading
 
-from flask import Flask, jsonify, request
+import requests
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s [%(levelname)s] %(name)s — %(message)s')
@@ -9,57 +11,96 @@ log = logging.getLogger(__name__)
 
 import converter
 
-app = Flask(__name__)
-API_KEY = os.getenv('API_KEY', '')
+SERVER_URL    = os.getenv('SERVER_URL', '').rstrip('/')
+API_KEY       = os.getenv('API_KEY', '')
+AGENT_NAME    = os.getenv('AGENT_NAME', 'Agent')
+POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '5'))
+HEADERS       = {'Authorization': f'Bearer {API_KEY}'}
 
 
-@app.before_request
-def check_auth():
-    auth = request.headers.get('Authorization', '')
-    if not API_KEY or auth != f'Bearer {API_KEY}':
-        return jsonify({'error': 'unauthorized'}), 401
+def _heartbeat_loop():
+    while True:
+        try:
+            requests.post(
+                f'{SERVER_URL}/api/agent/heartbeat',
+                headers=HEADERS,
+                json={
+                    'name': AGENT_NAME,
+                    'gpu': converter.GPU_NAME,
+                    'encoders': converter.ENCODERS,
+                },
+                timeout=10,
+            )
+        except Exception as e:
+            log.warning('Heartbeat : %s', e)
+        time.sleep(30)
 
 
-@app.route('/api/health')
-def health():
-    return jsonify({
-        'ok': True,
-        'busy': converter.is_busy(),
-        'job_id': converter._state['job_id'] if converter.is_busy() else None,
-        'encoders': converter.ENCODERS,
-        'gpu': converter.GPU_NAME,
-    })
+def _report_loop(job_id):
+    while True:
+        st = converter.get_state(job_id)
+        if st is None or st['state'] == 'idle':
+            break
+        if st['state'] == 'done':
+            break
+        if st['state'] == 'canceled':
+            break
+        if st['state'] == 'error':
+            try:
+                requests.post(
+                    f'{SERVER_URL}/api/agent/jobs/{job_id}/error',
+                    headers=HEADERS,
+                    json={'message': st.get('message', '')},
+                    timeout=10,
+                )
+            except Exception as e:
+                log.warning('Rapport erreur job %s : %s', job_id, e)
+            break
+        try:
+            r = requests.post(
+                f'{SERVER_URL}/api/agent/jobs/{job_id}/progress',
+                headers=HEADERS,
+                json=st,
+                timeout=8,
+            )
+            if r.ok and r.json().get('cancel'):
+                log.info('Annulation reçue pour job %s', job_id)
+                converter.cancel(job_id)
+                break
+        except Exception as e:
+            log.warning('Rapport progression job %s : %s', job_id, e)
+        time.sleep(3)
 
 
-@app.route('/api/jobs', methods=['POST'])
-def create_job():
-    payload = request.get_json(force=True, silent=True) or {}
-    required = ('job_id', 'download_url', 'upload_url', 'options')
-    if any(k not in payload for k in required):
-        return jsonify({'error': 'payload incomplet'}), 400
-    if not converter.start_job(payload, API_KEY):
-        return jsonify({'error': 'busy'}), 409
-    log.info('Job %s accepté : %s', payload['job_id'], payload.get('name', '?'))
-    return jsonify({'accepted': True}), 202
-
-
-@app.route('/api/jobs/<int:job_id>')
-def job_status(job_id):
-    st = converter.get_state(job_id)
-    if st is None:
-        return jsonify({'error': 'inconnu'}), 404
-    return jsonify(st)
-
-
-@app.route('/api/jobs/<int:job_id>/cancel', methods=['POST'])
-def job_cancel(job_id):
-    if not converter.cancel(job_id):
-        return jsonify({'error': 'aucun job actif avec cet id'}), 404
-    return jsonify({'ok': True})
+def _main_loop():
+    if not SERVER_URL:
+        log.error('SERVER_URL non configuré — arrêt.')
+        return
+    log.info('Agent démarré — serveur : %s', SERVER_URL)
+    while True:
+        if not converter.is_busy():
+            try:
+                r = requests.post(
+                    f'{SERVER_URL}/api/agent/jobs/claim',
+                    headers=HEADERS,
+                    json={},
+                    timeout=10,
+                )
+                if r.ok and r.status_code != 204:
+                    job = r.json()
+                    if job.get('job_id'):
+                        log.info('Job %s réclamé : %s', job['job_id'], job.get('name', '?'))
+                        converter.start_job(job, API_KEY)
+                        threading.Thread(
+                            target=_report_loop, args=(job['job_id'],), daemon=True
+                        ).start()
+            except Exception as e:
+                log.warning('Sondage : %s', e)
+        time.sleep(POLL_INTERVAL)
 
 
 if __name__ == '__main__':
     os.makedirs(converter.WORK_DIR, exist_ok=True)
     converter.detect()
-    app.run(host='0.0.0.0', port=int(os.getenv('FLASK_PORT', 5401)),
-            debug=False, threaded=True)
+    threading.Thread(target=_heartbeat_loop, daemon=True).start()
+    _main_loop()
