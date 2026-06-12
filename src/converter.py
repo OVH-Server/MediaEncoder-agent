@@ -80,7 +80,7 @@ def _set(**kw):
         _state.update(kw)
 
 
-def start_job(payload, api_key):
+def start_job(payload, headers):
     with _lock:
         if _state['state'] in BUSY_STATES:
             return False
@@ -88,7 +88,7 @@ def start_job(payload, api_key):
         _state.update(job_id=payload['job_id'], state='starting', progress=0.0,
                       fps=0.0, eta=None, message='', out_size=0,
                       frame=0, total_frames=0, streams=[])
-    threading.Thread(target=_run, args=(payload, api_key), daemon=True).start()
+    threading.Thread(target=_run, args=(payload, headers), daemon=True).start()
     return True
 
 
@@ -107,13 +107,12 @@ def _check_cancel():
         raise _Canceled()
 
 
-def _run(payload, api_key):
+def _run(payload, headers):
     jid = payload['job_id']
     ext = (payload.get('ext') or '.mkv').lower()
     out_ext = ext if ext in KEEP_EXTS else '.mkv'
     inp = os.path.join(WORK_DIR, f'in_{jid}{ext}')
     out = os.path.join(WORK_DIR, f'out_{jid}{out_ext}')
-    headers = {'Authorization': f'Bearer {api_key}'}
     try:
         _download(payload['download_url'], inp, headers,
                   payload.get('size') or 0)

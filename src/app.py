@@ -93,7 +93,7 @@ def _main_loop():
                     job = r.json()
                     if job.get('job_id'):
                         log.info('Job %s réclamé : %s', job['job_id'], job.get('name', '?'))
-                        converter.start_job(job, API_KEY)
+                        converter.start_job(job, HEADERS)
                         threading.Thread(
                             target=_report_loop, args=(job['job_id'],), daemon=True
                         ).start()
