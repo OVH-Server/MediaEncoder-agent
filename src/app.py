@@ -1,4 +1,5 @@
 import os
+import signal
 import socket
 import time
 import logging
@@ -23,9 +24,11 @@ _basic = os.getenv('BASIC_AUTH', '')  # format user:pass
 if _basic:
     HEADERS['Authorization'] = 'Basic ' + b64encode(_basic.encode()).decode()
 
+_shutdown = threading.Event()
+
 
 def _heartbeat_loop():
-    while True:
+    while not _shutdown.is_set():
         try:
             requests.post(
                 f'{SERVER_URL}/api/agent/heartbeat',
@@ -39,7 +42,7 @@ def _heartbeat_loop():
             )
         except Exception as e:
             log.warning('Heartbeat : %s', e)
-        time.sleep(30)
+        _shutdown.wait(30)
 
 
 def _report_loop(job_id):
@@ -85,7 +88,22 @@ def _report_loop(job_id):
                     converter.start_prefetch(prefetch, HEADERS)
         except Exception as e:
             log.warning('Rapport progression job %s : %s', job_id, e)
-        time.sleep(3)
+        _shutdown.wait(3)
+
+
+def _send_disconnect():
+    if not SERVER_URL:
+        return
+    try:
+        requests.post(
+            f'{SERVER_URL}/api/agent/disconnect',
+            headers=HEADERS,
+            json={'agent_id': AGENT_ID},
+            timeout=5,
+        )
+        log.info('Déconnexion signalée au serveur')
+    except Exception as e:
+        log.warning('Erreur lors de la déconnexion : %s', e)
 
 
 def _main_loop():
@@ -93,7 +111,7 @@ def _main_loop():
         log.error('SERVER_URL non configuré — arrêt.')
         return
     log.info('Agent démarré — serveur : %s', SERVER_URL)
-    while True:
+    while not _shutdown.is_set():
         if not converter.is_busy():
             try:
                 r = requests.post(
@@ -112,11 +130,19 @@ def _main_loop():
                         ).start()
             except Exception as e:
                 log.warning('Sondage : %s', e)
-        time.sleep(POLL_INTERVAL)
+        _shutdown.wait(POLL_INTERVAL)
 
 
 if __name__ == '__main__':
+    def _on_signal(signum, frame):
+        log.info('Signal %s reçu — arrêt propre…', signum)
+        _shutdown.set()
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+
     os.makedirs(converter.WORK_DIR, exist_ok=True)
     converter.detect()
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     _main_loop()
+    _send_disconnect()
