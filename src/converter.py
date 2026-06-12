@@ -122,7 +122,8 @@ def start_job(payload, headers):
         if _prefetch['job_id'] != payload['job_id']:
             _prefetch_cancel.set()
             _prefetch.update(job_id=None, path=None, done=False, error=None,
-                             thread=None, progress=0.0)
+                             thread=None, progress=0.0, speed=0.0,
+                             error_reported=False)
     threading.Thread(target=_run, args=(payload, headers), daemon=True).start()
     return True
 
@@ -161,6 +162,12 @@ def _prefetch_run(payload, headers):
             with open(path, 'wb') as fh:
                 for chunk in r.iter_content(1024 * 1024):
                     if _prefetch_cancel.is_set():
+                        # Annulé (nouveau job différent) : supprime le partiel,
+                        # sinon il traîne dans WORK_DIR jusqu'au prochain boot.
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
                         return
                     h.update(chunk)
                     fh.write(chunk)
@@ -241,8 +248,8 @@ def _wait_for_prefetch(job_id):
         deadline = time.time() + 600
         while t.is_alive() and time.time() < deadline:
             with _prefetch_lock:
-                prog = _prefetch['progress']
-            _set(progress=prog)
+                prog, spd = _prefetch['progress'], _prefetch['speed']
+            _set(progress=prog, speed=spd)
             t.join(timeout=1)
         if t.is_alive():
             log.warning('Job %s : préchargement trop long, abandon', job_id)

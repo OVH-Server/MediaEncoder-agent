@@ -19,7 +19,9 @@ API_KEY       = os.getenv('API_KEY', '')
 AGENT_ID      = os.getenv('AGENT_ID', socket.gethostname())
 POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '5'))
 
-HEADERS = {'X-Agent-Key': API_KEY}
+# X-Agent-Id sur toutes les requêtes (transferts inclus) : permet au serveur de
+# refuser les transferts d'un agent zombie dont le job a été réassigné.
+HEADERS = {'X-Agent-Key': API_KEY, 'X-Agent-Id': AGENT_ID}
 _basic = os.getenv('BASIC_AUTH', '')  # format user:pass
 if _basic:
     HEADERS['Authorization'] = 'Basic ' + b64encode(_basic.encode()).decode()
