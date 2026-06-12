@@ -13,7 +13,6 @@ import converter
 
 SERVER_URL    = os.getenv('SERVER_URL', '').rstrip('/')
 API_KEY       = os.getenv('API_KEY', '')
-AGENT_NAME    = os.getenv('AGENT_NAME', 'Agent')
 POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '5'))
 HEADERS       = {'Authorization': f'Bearer {API_KEY}'}
 
@@ -25,7 +24,6 @@ def _heartbeat_loop():
                 f'{SERVER_URL}/api/agent/heartbeat',
                 headers=HEADERS,
                 json={
-                    'name': AGENT_NAME,
                     'gpu': converter.GPU_NAME,
                     'encoders': converter.ENCODERS,
                 },
