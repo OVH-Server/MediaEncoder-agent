@@ -40,6 +40,27 @@ class _Canceled(Exception):
     pass
 
 
+def clean_workdir():
+    """Vide WORK_DIR au démarrage pour repartir propre : tout fichier restant est
+    le résidu d'un job interrompu (l'agent ne reprend jamais un transfert à chaud,
+    le serveur remet ces jobs en attente). Garde le dossier lui-même."""
+    if not os.path.isdir(WORK_DIR):
+        return
+    removed = 0
+    for entry in os.listdir(WORK_DIR):
+        path = os.path.join(WORK_DIR, entry)
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            removed += 1
+        except OSError as e:
+            log.warning('Nettoyage WORK_DIR : %s non supprimé (%s)', path, e)
+    if removed:
+        log.info('WORK_DIR nettoyé au démarrage : %d élément(s) supprimé(s)', removed)
+
+
 def detect():
     """Détecte les encodeurs disponibles (NVENC, avec repli CPU) et le GPU."""
     global ENCODERS, GPU_NAME

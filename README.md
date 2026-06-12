@@ -6,6 +6,9 @@ tourne sur un PC équipé d'un GPU NVIDIA, attend les jobs du serveur, télécha
 le fichier, le convertit (hevc_nvenc / h264_nvenc) et le renvoie.
 
 - Un job à la fois ; progression (fps, ETA), annulation propre (kill ffmpeg).
+- **WORK_DIR vidé au démarrage** : tout résidu d'un job interrompu est supprimé
+  pour repartir propre (l'agent ne reprend jamais un transfert à chaud — le
+  serveur remet automatiquement ces jobs en file d'attente).
 - **Préchargement pipeline** : pendant l'encodage du job N, le fichier du job
   N+1 est téléchargé en arrière-plan (payload `prefetch` reçu dans la réponse
   à `/progress`) → zéro temps mort entre deux jobs. La progression du

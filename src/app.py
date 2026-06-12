@@ -142,6 +142,7 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, _on_signal)
 
     os.makedirs(converter.WORK_DIR, exist_ok=True)
+    converter.clean_workdir()
     converter.detect()
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     _main_loop()
