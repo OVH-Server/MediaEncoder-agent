@@ -1,4 +1,5 @@
 import os
+import socket
 import time
 import logging
 import threading
@@ -14,6 +15,7 @@ import converter
 
 SERVER_URL    = os.getenv('SERVER_URL', '').rstrip('/')
 API_KEY       = os.getenv('API_KEY', '')
+AGENT_ID      = os.getenv('AGENT_ID', socket.gethostname())
 POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '5'))
 
 HEADERS = {'X-Agent-Key': API_KEY}
@@ -29,7 +31,8 @@ def _heartbeat_loop():
                 f'{SERVER_URL}/api/agent/heartbeat',
                 headers=HEADERS,
                 json={
-                    'gpu': converter.GPU_NAME,
+                    'agent_id': AGENT_ID,
+                    'gpu':      converter.GPU_NAME,
                     'encoders': converter.ENCODERS,
                 },
                 timeout=10,
@@ -53,7 +56,7 @@ def _report_loop(job_id):
                 requests.post(
                     f'{SERVER_URL}/api/agent/jobs/{job_id}/error',
                     headers=HEADERS,
-                    json={'message': st.get('message', '')},
+                    json={'agent_id': AGENT_ID, 'message': st.get('message', '')},
                     timeout=10,
                 )
             except Exception as e:
@@ -63,7 +66,7 @@ def _report_loop(job_id):
             r = requests.post(
                 f'{SERVER_URL}/api/agent/jobs/{job_id}/progress',
                 headers=HEADERS,
-                json=st,
+                json={**st, 'agent_id': AGENT_ID},
                 timeout=8,
             )
             if r.ok and r.json().get('cancel'):
@@ -86,7 +89,7 @@ def _main_loop():
                 r = requests.post(
                     f'{SERVER_URL}/api/agent/jobs/claim',
                     headers=HEADERS,
-                    json={},
+                    json={'agent_id': AGENT_ID},
                     timeout=10,
                 )
                 if r.ok and r.status_code != 204:
