@@ -1,11 +1,22 @@
 # MediaEncoder — agent
 
-Agent d'encodage NVENC pour
-[MediaEncoder-server](https://github.com/RollinLondon/MediaEncoder-server) :
+Agent d'encodage NVENC pour le module encoder de
+[manage-nas](https://github.com/OVH-Server/manage-nas) :
 tourne sur un PC équipé d'un GPU NVIDIA, attend les jobs du serveur, télécharge
 le fichier, le convertit (hevc_nvenc / h264_nvenc) et le renvoie.
 
 - Un job à la fois ; progression (fps, ETA), annulation propre (kill ffmpeg).
+- **Préchargement pipeline** : pendant l'encodage du job N, le fichier du job
+  N+1 est téléchargé en arrière-plan (payload `prefetch` reçu dans la réponse
+  à `/progress`) → zéro temps mort entre deux jobs. La progression du
+  préchargement est rapportée au serveur (`prefetch_progress`) à chaque tick.
+  Si le job préchargé est réclamé alors que le download est encore en cours,
+  l'agent attend la fin du thread en relayant la progression (state
+  `downloading`).
+- **Déconnexion propre** : SIGTERM/SIGINT (`docker compose down`) interrompt
+  les boucles via un `threading.Event` puis POST `/api/agent/disconnect` —
+  le serveur marque l'agent hors-ligne immédiatement (sans attendre les 90s
+  d'expiration du heartbeat) et libère ses jobs.
 - Pistes audio, sous-titres, chapitres et pièces jointes copiés sans ré-encodage.
 - Les conteneurs exotiques (avi, ts, wmv…) sont remuxés en `.mkv`.
 - Vérifie au démarrage que NVENC s'initialise vraiment (GPU visible) ; repli
@@ -24,8 +35,11 @@ docker compose up -d --build
 
 | Variable | Rôle |
 |---|---|
-| `API_KEY` | Clé partagée serveur ↔ agent |
-| `FLASK_PORT` | Port publié sur l'hôte |
+| `SERVER_URL` | URL du serveur (ex. `https://nas.example.com/encoder`) |
+| `API_KEY` | Clé partagée serveur ↔ agent (`X-Agent-Key`) |
+| `AGENT_ID` | Identifiant de l'agent côté serveur (défaut : hostname du conteneur) |
+| `POLL_INTERVAL` | Secondes entre deux sondages `/jobs/claim` (défaut : 5) |
+| `BASIC_AUTH` | `user:pass` optionnel si le serveur est derrière Authentik/Basic Auth |
 | `WORK_PATH` | Chemin hôte de stockage des fichiers à compresser / compressés (ex. `/data/hdd_1To/media-encoder`) |
 
 Vérifier que NVENC est détecté :

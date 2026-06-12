@@ -4,6 +4,7 @@ import logging
 import shutil
 import subprocess
 import threading
+import time
 
 import requests
 
@@ -177,7 +178,9 @@ def get_prefetch_progress():
 
 
 def _wait_for_prefetch(job_id):
-    """Joint le thread de préchargement et retourne le chemin si succès, sinon None."""
+    """Joint le thread de préchargement et retourne le chemin si succès, sinon None.
+    Pendant l'attente, relaie la progression du téléchargement dans _state pour
+    que l'UI affiche la suite du download au lieu d'un job figé sur 'sent'."""
     with _prefetch_lock:
         if _prefetch['job_id'] != job_id:
             return None
@@ -186,7 +189,13 @@ def _wait_for_prefetch(job_id):
 
     if t and t.is_alive():
         log.info('Job %s : attente fin préchargement…', job_id)
-        t.join(timeout=600)
+        _set(state='downloading')
+        deadline = time.time() + 600
+        while t.is_alive() and time.time() < deadline:
+            with _prefetch_lock:
+                prog = _prefetch['progress']
+            _set(progress=prog)
+            t.join(timeout=1)
         if t.is_alive():
             log.warning('Job %s : préchargement trop long, abandon', job_id)
             _prefetch_cancel.set()
