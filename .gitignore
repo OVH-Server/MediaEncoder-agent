@@ -3,3 +3,5 @@ work/
 __pycache__/
 *.pyc
 *.pyo
+# Clones générés par deploy-agents.sh
+agent-*/
