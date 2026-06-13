@@ -173,7 +173,7 @@ def _prefetch_run(payload, headers):
                     fh.write(chunk)
                     done_bytes += len(chunk)
                     now = time.time()
-                    if now - last_t >= 1.0:
+                    if now - last_t >= 0.5:
                         speed = (done_bytes - last_done) / (now - last_t)
                         last_t, last_done = now, done_bytes
                         with _prefetch_lock:
@@ -349,7 +349,7 @@ def _download(url, dest, headers, expected_size):
                 fh.write(chunk)
                 done += len(chunk)
                 now = time.time()
-                if now - last_t >= 1.0:
+                if now - last_t >= 0.5:
                     speed = (done - last_done) / (now - last_t)
                     last_t, last_done = now, done
                     upd = {'speed': speed}
@@ -525,7 +525,7 @@ class _ProgressFile:
         chunk = self._fh.read(n)
         self._sent += len(chunk)
         now = time.time()
-        if now - self._last_t >= 1.0:
+        if now - self._last_t >= 0.5:
             speed = (self._sent - self._last_sent) / (now - self._last_t)
             self._last_t, self._last_sent = now, self._sent
             upd = {'speed': speed}

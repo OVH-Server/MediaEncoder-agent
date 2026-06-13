@@ -67,6 +67,7 @@ def _report_loop(job_id):
             except Exception as e:
                 log.warning('Rapport erreur job %s : %s', job_id, e)
             break
+        pf = None
         try:
             body = {**st, 'agent_id': AGENT_ID}
             pf = converter.get_prefetch_progress()
@@ -93,7 +94,11 @@ def _report_loop(job_id):
                     converter.start_prefetch(prefetch, HEADERS)
         except Exception as e:
             log.warning('Rapport progression job %s : %s', job_id, e)
-        _shutdown.wait(3)
+        # Rapport fin (1s) pendant les transferts ou un préchargement actif —
+        # sinon (encodage, lent) 3s suffisent. Sans ça, un transfert rapide
+        # (LAN) se résume à 0% puis 100% côté serveur, sans vitesse intermédiaire.
+        transfer = st['state'] in ('downloading', 'uploading') or pf is not None
+        _shutdown.wait(1 if transfer else 3)
 
 
 def _send_disconnect():
