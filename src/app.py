@@ -94,10 +94,12 @@ def _report_loop(job_id):
                     converter.start_prefetch(prefetch, HEADERS)
         except Exception as e:
             log.warning('Rapport progression job %s : %s', job_id, e)
-        # Rapport fin (1s) pendant les transferts ou un préchargement actif —
-        # sinon (encodage, lent) 3s suffisent. Sans ça, un transfert rapide
-        # (LAN) se résume à 0% puis 100% côté serveur, sans vitesse intermédiaire.
-        transfer = st['state'] in ('downloading', 'uploading') or pf is not None
+        # Rapport fin (1s) pendant un transfert RÉELLEMENT actif (download/upload
+        # ou préchargement pas encore terminé) — sinon (encodage, ou préchargement
+        # fini en attente) 3s suffisent. Sans ça, un transfert rapide (LAN) se
+        # résume à 0% puis 100% côté serveur, sans vitesse intermédiaire.
+        transfer = (st['state'] in ('downloading', 'uploading')
+                    or (pf is not None and pf[1] < 100))
         _shutdown.wait(1 if transfer else 3)
 
 

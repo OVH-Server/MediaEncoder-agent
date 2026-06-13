@@ -209,14 +209,18 @@ def has_prefetch(job_id):
 
 
 def get_prefetch_progress():
-    """Retourne (job_id, progress%, speed) si un préchargement est actif, sinon None."""
+    """Retourne (job_id, progress%, speed) tant qu'un préchargement existe (succès).
+    Continue à rapporter même une fois terminé (progress=100, speed=0) pour que le
+    serveur ne reste pas figé sur la dernière valeur en boucle (~99.x%). Sur erreur,
+    retourne None (get_prefetch_error prend le relais)."""
     with _prefetch_lock:
         jid   = _prefetch['job_id']
         prog  = _prefetch['progress']
         speed = _prefetch['speed']
         done  = _prefetch['done']
-    if jid is not None and not done:
-        return jid, prog, speed
+        error = _prefetch['error']
+    if jid is not None and not error:
+        return (jid, 100.0, 0.0) if done else (jid, prog, speed)
     return None
 
 
