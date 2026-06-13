@@ -61,6 +61,27 @@ docker compose logs mediaencoder-agent
 Notes GTX 1060 : encodeur Pascal — pas d'AV1, pas de B-frames en HEVC ;
 `hevc_nvenc` CQ 24 donne typiquement −40 à −60 % sur des sources H.264.
 
+### Plusieurs agents sur le même hôte (`deploy-agents.sh`)
+
+Lance N agents, chacun dans son propre clone, à partir d'un `.env` commun :
+
+```sh
+./deploy-agents.sh <env-par-defaut> <nombre-agents> <branche>
+# ex. : ./deploy-agents.sh ./default.env 3 nfour
+```
+
+Pour chaque agent `i` : reclone le repo dans `agent-<branche>-<i>/`, copie le
+`.env` fourni (toutes les data), puis isole automatiquement :
+- `AGENT_ID` = `<base>-<i>` (base = `AGENT_ID` du `.env`, sinon hostname) — chaque
+  agent est ainsi distinct côté serveur ;
+- `WORK_PATH` = `<dossier-agent>/work` (sinon le nettoyage WORK_DIR au boot d'un
+  agent effacerait le travail des autres) ;
+- `container_name` unique (sinon collision Docker).
+
+Puis `docker compose up -d --build`. Relancer le script met à jour les clones
+existants (`reset --hard` sur la branche). ⚠ Les agents partagent le GPU : la
+carte limite le nombre de sessions NVENC simultanées.
+
 ## Développement
 
 Ce dépôt est un fork de
