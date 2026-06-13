@@ -181,7 +181,13 @@ def _prefetch_run(payload, headers):
                                 _prefetch['speed'] = speed
                                 if total:
                                     _prefetch['progress'] = min(99.9, done_bytes * 100.0 / total)
-        # Fichier complètement écrit : vérifie l'intégrité avant de le marquer prêt.
+        # Fichier complètement écrit : barre pleine + vitesse à 0 pendant la
+        # vérif d'intégrité (le serveur lit/hash le fichier source, peut prendre
+        # quelques secondes sur NFS) — évite un faux gel à ~99.x% avec vitesse périmée.
+        with _prefetch_lock:
+            if _prefetch['job_id'] == jid:
+                _prefetch['progress'] = 100.0
+                _prefetch['speed'] = 0.0
         # En cas de mismatch → error → _wait_for_prefetch retournera None et le
         # job retombera sur un _download normal (re-téléchargement).
         _verify_source_checksum(payload, h.hexdigest(), headers)
@@ -311,8 +317,9 @@ def _run(payload, headers):
             digest = _download(payload['download_url'], inp, headers,
                                payload.get('size') or 0)
             _check_cancel()
+            _set(progress=100.0, speed=0.0, message='Vérification intégrité…')
             _verify_source_checksum(payload, digest, headers)
-            _set(state='probing', progress=0.0)
+            _set(state='probing', progress=0.0, message='')
         duration, total_frames, streams = _probe_streams(inp)
         _set(state='converting', progress=0.0, total_frames=total_frames, streams=streams, speed=0.0)
         _convert(payload['options'], inp, out, out_ext, duration)
